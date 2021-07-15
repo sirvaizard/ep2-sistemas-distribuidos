@@ -7,7 +7,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import sum, mean, stddev
 
 os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-8-openjdk-amd64"
-os.environ["SPARK_HOME"] =  "spark-3.1.2-bin-hadoop3.2"
+os.environ["SPARK_HOME"] = "spark-3.1.2-bin-hadoop3.2"
 
 findspark.init('spark-3.1.2-bin-hadoop3.2')
 
@@ -17,13 +17,38 @@ spark = SparkSession.builder.master('local[*]').getOrCreate()
 dataset = spark.read.csv('dataset/*', header=True)
 working_data = dataset
 
+def getShowString(df, truncate=True, vertical=False):
+    if isinstance(truncate, bool) and truncate:
+        return(df._jdf.showString(df.count(), 0, vertical))
+    else:
+        return(df._jdf.showString(df.count(), int(truncate), vertical))
+
+def data_describe(df, column, group):
+
+  from pyspark.sql.functions import mean, stddev, count, max, min, kurtosis, skewness, year, month
+
+  if group == "all":
+    result = df.agg(count(column), mean(column), min(column), max(column), skewness(column), kurtosis(column), stddev(column))
+    return getShowString(result)
+
+  if group == "year":
+    result = df.groupBy(year('DATE')).agg(count(column), mean(column), min(column), max(column), skewness(column), kurtosis(column), stddev(column)).orderBy(year('DATE'))
+    return getShowString(result)
+
+  if group == "month":
+    result = df.groupBy([year('DATE') , month('DATE')]).agg(count(column), mean(column), min(column), max(column), skewness(column), kurtosis(column), stddev(column)).orderBy([year('DATE'), month('DATE')])
+    return getShowString(result)
+
+
 def get_mean(column):
     """Retorna a média da coluna"""
     return working_data.select(mean(column)).collect()[0][0]
 
+
 def get_std_deviation(column):
     """Retorna o desvio padrão da coluna"""
     return working_data.select(stddev(column)).collect()[0][0]
+
 
 def between_dates(begin, end):
     """Retorna um DataFrame com linhas entre as datas, formato: YYYY-mm-dd"""
@@ -34,6 +59,7 @@ def between_dates(begin, end):
 
 # Desvio padrão coluna temperatura entre o ano de 1931 e 1935
 # print(std_deviation(between_dates(dataset, '1931-01-01', '1935-12-31'), 'TEMP'))
+
 
 class MenuConfig:
     def __init__(self, items, stdscreen, title='Title'):
@@ -53,7 +79,7 @@ class MenuConfig:
             self.position = 0
         elif self.position >= len(self.items):
             self.position = len(self.items) - 1
-    
+
     def display(self):
         self.panel.top()
         self.panel.show()
@@ -91,6 +117,7 @@ class MenuConfig:
         panel.update_panels()
         curses.doupdate()
 
+
 class Menu:
     def __init__(self, stdscreen):
         self.screen = stdscreen
@@ -101,30 +128,58 @@ class Menu:
             ("Por intervalo de anos", curses.flash),
             ("Voltar", "exit")
         ]
-        menu_range = MenuConfig(menu_range_items, self.screen, 'Selecionar subset de dados')
+        menu_range = MenuConfig(
+            menu_range_items, self.screen, 'Selecionar subset de dados')
 
-        stddev_show = MenuConfig([("Voltar", "exit")], self.screen, 'Desvio padrão: ')
-        
+        stddev_show = MenuConfig(
+            [("Voltar", "exit")], self.screen, 'Desvio padrão: ')
+
         stddev_menu_items = [
             ("Todas colunas numéricas", curses.beep),
-            ("TEMP", lambda: self.settitle_and_display(stddev_show, f'Desvio padrão: {get_std_deviation("TEMP")}')),
-            ("DEWP", lambda: self.settitle_and_display(stddev_show, f'Desvio padrão: {get_std_deviation("DEWP")}')),
+            ("TEMP", lambda: self.settitle_and_display(
+                stddev_show, f'Desvio padrão: {get_std_deviation("TEMP")}')),
+            ("DEWP", lambda: self.settitle_and_display(
+                stddev_show, f'Desvio padrão: {get_std_deviation("DEWP")}')),
             ("Voltar", "exit")
         ]
-        stddev_menu = MenuConfig(stddev_menu_items, self.screen, 'Dados selecionados: Todos')
-        
+
+        stddev_menu = MenuConfig(
+            stddev_menu_items, self.screen, 'Dados selecionados: Todos')
+
+        ## describe
+
+        describe_show = MenuConfig([("Voltar", "exit")], self.screen, 'Describe')
+
+        describe_menu_items = [
+            ("TEMP - Todos os dados", lambda: self.settitle_and_display(
+                describe_show, f'\n\n\n\n{data_describe(working_data, "TEMP", "all")}')),
+            ("TEMP - Por Ano", lambda: self.settitle_and_display(
+                describe_show, f'\n\n\n{data_describe(working_data, "TEMP", "year")}')),
+            ("TEMP - Por mês", lambda: self.settitle_and_display(
+                describe_show, f'\n\n\n{data_describe(working_data, "TEMP", "month")}')),
+            
+            ("Voltar", "exit")
+        ]
+
+        describe_menu = MenuConfig(
+            describe_menu_items, self.screen, 'Dados selecionados: Todos')
+
+        ##
         main_menu_items = [
             ("Trocar intervalo de dados", menu_range.display),
             ("Desvio Padrão", stddev_menu.display),
-            ("Sair", "exit"),
+            ("Describe", describe_menu.display),
+            ("Sair", "exit")
         ]
-        main_menu = MenuConfig(main_menu_items, self.screen, 'Dados selecionados: Todos')
-        
+        main_menu = MenuConfig(main_menu_items, self.screen,
+                               'Dados selecionados: Todos')
+
         main_menu.display()
 
     def settitle_and_display(self, menu, title):
         menu.title = title
         menu.display()
+
 
 if __name__ == '__main__':
     curses.wrapper(Menu)
