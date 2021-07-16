@@ -65,8 +65,11 @@ class MenuConfig:
     def __init__(self, items, stdscreen, title='Title'):
         self.window = stdscreen.subwin(0, 0)
         self.window.keypad(1)
+        self.window.scrollok(True)
         self.panel = panel.new_panel(self.window)
         self.panel.hide()
+        self.page = 0
+        self.data = ''
         self.title = title
         panel.update_panels()
 
@@ -84,11 +87,19 @@ class MenuConfig:
         self.panel.top()
         self.panel.show()
         self.window.clear()
+        self.page = 3
 
         while True:
+            rows, cols = self.window.getmaxyx()
+
+            self.window.clrtobot()
             self.window.refresh()
             curses.doupdate()
-            self.window.addstr(0, 1, self.title, curses.A_NORMAL)
+            self.window.addstr(0, 1, self.title + str(rows), curses.A_NORMAL)
+            start = 3
+            for line in self.data.split('\n')[self.page:self.page+(rows - 5)]:
+                self.window.addstr(start, 1, line, curses.A_NORMAL)
+                start += 1
             for index, item in enumerate(self.items):
                 if index == self.position:
                     mode = curses.A_REVERSE
@@ -111,6 +122,12 @@ class MenuConfig:
 
             elif key == curses.KEY_DOWN:
                 self.navigate(1)
+            elif key == curses.KEY_NPAGE:
+                self.page += 2
+            elif key == curses.KEY_PPAGE:
+                self.page -= 2
+                if self.page < 0:
+                    self.page = 0
 
         self.window.clear()
         self.panel.hide()
@@ -150,13 +167,14 @@ class Menu:
 
         describe_show = MenuConfig([("Voltar", "exit")], self.screen, 'Describe')
 
+        scroll_txt = ' (Page Down e Page Up para mover pra cima e para baixo)'
         describe_menu_items = [
             ("TEMP - Todos os dados", lambda: self.settitle_and_display(
-                describe_show, f'\n\n\n\n{data_describe(working_data, "TEMP", "all")}')),
+                describe_show, 'TEMP - Todos os dados' + scroll_txt, f'\n\n\n\n{data_describe(working_data, "TEMP", "all")}')),
             ("TEMP - Por Ano", lambda: self.settitle_and_display(
-                describe_show, f'\n\n\n{data_describe(working_data, "TEMP", "year")}')),
+                describe_show, 'TEMP - Por Ano' + scroll_txt, f'\n\n\n{data_describe(working_data, "TEMP", "year")}')),
             ("TEMP - Por mês", lambda: self.settitle_and_display(
-                describe_show, f'\n\n\n{data_describe(working_data, "TEMP", "month")}')),
+                describe_show, 'TEMP - Por mês' + scroll_txt, f'\n\n\n{data_describe(working_data, "TEMP", "month")}')),
             
             ("Voltar", "exit")
         ]
@@ -176,8 +194,9 @@ class Menu:
 
         main_menu.display()
 
-    def settitle_and_display(self, menu, title):
+    def settitle_and_display(self, menu, title, data=''):
         menu.title = title
+        menu.data = data
         menu.display()
 
 
