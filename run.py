@@ -4,7 +4,8 @@ from curses import panel
 
 import findspark
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import sum, mean, stddev
+from pyspark.sql.functions import sum, mean, stddev, year, month
+import matplotlib.pyplot as plt
 
 os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-8-openjdk-amd64"
 os.environ["SPARK_HOME"] = "spark-3.1.2-bin-hadoop3.2"
@@ -54,15 +55,45 @@ def between_dates(begin, end):
     """Retorna um DataFrame com linhas entre as datas, formato: YYYY-mm-dd"""
     return working_data.filter(f"DATE BETWEEN '{begin}' AND '{end}'")
 
-# Desvio padrão coluna temperatura
-# print(std_deviation(dataset, 'TEMP'))
 
-# Desvio padrão coluna temperatura entre o ano de 1931 e 1935
-# print(std_deviation(between_dates(dataset, '1931-01-01', '1935-12-31'), 'TEMP'))
+def set_interval(date):
+    global working_data
+    begin, end = date.split('-')
+    
+    begin_splitted = begin.split('/')
+    end_splitted = end.split('/')
+        
+    if len(begin_splitted) > 1:
+        begin_parsed = f'{begin_splitted[2]}-{begin_splitted[1]}-{begin_splitted[0]}'
+        end_parsed = f'{end_splitted[2]}-{end_splitted[1]}-{end_splitted[0]}'
+    else:
+        begin_parsed = f'{begin}-01-01'
+        end_parsed = f'{end}-12-31'
+    working_data = dataset.filter(f"DATE BETWEEN '{begin_parsed}' AND '{end_parsed}'")
 
+def restore_interval():
+    global working_data
+    working_data = dataset
+    MenuConfig.interval = 'Todos'
+
+def plot_graph(df, column, group, x_label, y_label):
+    if group == 'year':
+        data = df.groupBy(year('DATE')).agg(mean(column)).orderBy(year('DATE'))
+    if group == 'month':
+        data = df.groupBy(month('DATE')).agg(mean(column)).orderBy(month('DATE'))
+
+    x = data.select(f'{group}(DATE)').rdd.flatMap(lambda x: x).collect()
+    y = data.select(f'avg({column})').rdd.flatMap(lambda x: x).collect()
+
+    plt.plot(x, y)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.show()
 
 class MenuConfig:
-    def __init__(self, items, stdscreen, title='Title'):
+    interval = 'Todos'
+
+    def __init__(self, items, stdscreen):
         self.window = stdscreen.subwin(0, 0)
         self.window.keypad(1)
         self.window.scrollok(True)
@@ -70,7 +101,6 @@ class MenuConfig:
         self.panel.hide()
         self.page = 0
         self.data = ''
-        self.title = title
         panel.update_panels()
 
         self.position = 0
@@ -90,44 +120,47 @@ class MenuConfig:
         self.page = 3
 
         while True:
-            rows, cols = self.window.getmaxyx()
+            try:
+                rows, cols = self.window.getmaxyx()
 
-            self.window.clrtobot()
-            self.window.refresh()
-            curses.doupdate()
-            self.window.addstr(0, 1, self.title + str(rows), curses.A_NORMAL)
-            start = 3
-            for line in self.data.split('\n')[self.page:self.page+(rows - 5)]:
-                self.window.addstr(start, 1, line, curses.A_NORMAL)
-                start += 1
-            for index, item in enumerate(self.items):
-                if index == self.position:
-                    mode = curses.A_REVERSE
-                else:
-                    mode = curses.A_NORMAL
+                self.window.clrtobot()
+                self.window.refresh()
+                curses.doupdate()
+                self.window.addstr(0, 1, f'Dados selecionados: {MenuConfig.interval}', curses.A_NORMAL)
+                start = 3
+                for line in self.data.split('\n')[self.page:self.page+(rows - 5)]:
+                    self.window.addstr(start, 1, line, curses.A_NORMAL)
+                    start += 1
+                for index, item in enumerate(self.items):
+                    if index == self.position:
+                        mode = curses.A_REVERSE
+                    else:
+                        mode = curses.A_NORMAL
 
-                msg = "%d. %s" % (index, item[0])
-                self.window.addstr(2 + index, 1, msg, mode)
+                    msg = "%d. %s" % (index, item[0])
+                    self.window.addstr(2 + index, 1, msg, mode)
 
-            key = self.window.getch()
+                key = self.window.getch()
 
-            if key in [curses.KEY_ENTER, ord("\n")]:
-                if self.position == len(self.items) - 1:
-                    break
-                else:
-                    self.items[self.position][1]()
+                if key in [curses.KEY_ENTER, ord("\n")]:
+                    if self.position == len(self.items) - 1:
+                        break
+                    else:
+                        self.items[self.position][1]()
 
-            elif key == curses.KEY_UP:
-                self.navigate(-1)
+                elif key == curses.KEY_UP:
+                    self.navigate(-1)
 
-            elif key == curses.KEY_DOWN:
-                self.navigate(1)
-            elif key == curses.KEY_NPAGE:
-                self.page += 2
-            elif key == curses.KEY_PPAGE:
-                self.page -= 2
-                if self.page < 0:
-                    self.page = 0
+                elif key == curses.KEY_DOWN:
+                    self.navigate(1)
+                elif key == curses.KEY_NPAGE:
+                    self.page += 2
+                elif key == curses.KEY_PPAGE:
+                    self.page -= 2
+                    if self.page < 0:
+                        self.page = 0
+            except:
+                pass
 
         self.window.clear()
         self.panel.hide()
@@ -138,59 +171,85 @@ class MenuConfig:
 class Menu:
     def __init__(self, stdscreen):
         self.screen = stdscreen
+        self.column = ''
         curses.curs_set(0)
 
         menu_range_items = [
-            ("Por ano", curses.beep),
-            ("Por intervalo de anos", curses.flash),
+            ("Todos", restore_interval),
+            ("Por ano, ex: 1929-1930", self.get_interval),
+            ("Por data completa, ex: 01/01/1929-03/03/1930", self.get_interval),
             ("Voltar", "exit")
         ]
         menu_range = MenuConfig(
-            menu_range_items, self.screen, 'Selecionar subset de dados')
-
-        stddev_show = MenuConfig(
-            [("Voltar", "exit")], self.screen, 'Desvio padrão: ')
-
-        stddev_menu_items = [
-            ("Todas colunas numéricas", curses.beep),
-            ("TEMP", lambda: self.settitle_and_display(
-                stddev_show, f'Desvio padrão: {get_std_deviation("TEMP")}')),
-            ("DEWP", lambda: self.settitle_and_display(
-                stddev_show, f'Desvio padrão: {get_std_deviation("DEWP")}')),
-            ("Voltar", "exit")
-        ]
-
-        stddev_menu = MenuConfig(
-            stddev_menu_items, self.screen, 'Dados selecionados: Todos')
+            menu_range_items, self.screen)
 
         ## describe
-
-        describe_show = MenuConfig([("Voltar", "exit")], self.screen, 'Describe')
-
         scroll_txt = ' (Page Down e Page Up para mover pra cima e para baixo)'
+        describe_menu_groupy = MenuConfig([
+            ('Todos',  lambda: self.settitle_and_display(
+                describe_show, f'{self.column} - Todos os dados' + scroll_txt, f'\n\n\n{data_describe(working_data, self.column, "all")}')),
+            ('Por ano', lambda: self.settitle_and_display(
+                describe_show, f'{self.column} - Agrupado por ano' + scroll_txt, f'\n\n\n{data_describe(working_data, self.column, "year")}')),
+            ('Por mês', lambda: self.settitle_and_display(
+                describe_show, f'{self.column} - Agrupado por mês' + scroll_txt, f'\n\n\n{data_describe(working_data, self.column, "month")}')),
+            ('Voltar', 'exit')
+        ], self.screen)
+
+
+        describe_show = MenuConfig([("Voltar", "exit")], self.screen)
+
         describe_menu_items = [
-            ("TEMP - Todos os dados", lambda: self.settitle_and_display(
-                describe_show, 'TEMP - Todos os dados' + scroll_txt, f'\n\n\n\n{data_describe(working_data, "TEMP", "all")}')),
-            ("TEMP - Por Ano", lambda: self.settitle_and_display(
-                describe_show, 'TEMP - Por Ano' + scroll_txt, f'\n\n\n{data_describe(working_data, "TEMP", "year")}')),
-            ("TEMP - Por mês", lambda: self.settitle_and_display(
-                describe_show, 'TEMP - Por mês' + scroll_txt, f'\n\n\n{data_describe(working_data, "TEMP", "month")}')),
-            
-            ("Voltar", "exit")
+            ("TEMP", lambda: self.set_describe_menu('TEMP', describe_menu_groupy)),
+            ("DEWP", lambda: self.set_describe_menu('DEWP', describe_menu_groupy)),
+            ("SLP", lambda: self.set_describe_menu('SLP', describe_menu_groupy)),
+            ("STP", lambda: self.set_describe_menu('STP', describe_menu_groupy)),
+            ("VISIB", lambda: self.set_describe_menu('VISIB', describe_menu_groupy)),
+            ("WDSP", lambda: self.set_describe_menu('WDSP', describe_menu_groupy)),
+            ("MXSPD", lambda: self.set_describe_menu('MXSPD', describe_menu_groupy)),
+            ("GUST", lambda: self.set_describe_menu('GUST', describe_menu_groupy)),
+            ("MAX", lambda: self.set_describe_menu('MAX', describe_menu_groupy)),
+            ("MIN", lambda: self.set_describe_menu('MIN', describe_menu_groupy)),
+            ("PRCP", lambda: self.set_describe_menu('PRCP', describe_menu_groupy)),
+            ("SNDP", lambda: self.set_describe_menu('SNDP', describe_menu_groupy)),
+            ('Voltar', 'exit')
         ]
 
-        describe_menu = MenuConfig(
-            describe_menu_items, self.screen, 'Dados selecionados: Todos')
+        describe_menu = MenuConfig(describe_menu_items, self.screen)
+
+        # Plotar graficos
+        plot_menu_groupy = MenuConfig([
+            ('Agrupado por ano',  lambda: plot_graph(working_data, self.column, 'year', 'Ano', self.column)),
+            ('Agrupado por mês', lambda: self.settitle_and_display(
+                describe_show, f'{self.column} - Agrupado por mês' + scroll_txt, f'\n\n\n{data_describe(working_data, self.column, "month")}')),
+            ('Voltar', 'exit')
+        ], self.screen)
+
+        plot_menu_items = [
+            ("TEMP", lambda: self.set_describe_menu('TEMP', plot_menu_groupy)),
+            ("DEWP", lambda: self.set_describe_menu('DEWP', plot_menu_groupy)),
+            ("SLP", lambda: self.set_describe_menu('SLP', plot_menu_groupy)),
+            ("STP", lambda: self.set_describe_menu('STP', plot_menu_groupy)),
+            ("VISIB", lambda: self.set_describe_menu('VISIB', plot_menu_groupy)),
+            ("WDSP", lambda: self.set_describe_menu('WDSP', plot_menu_groupy)),
+            ("MXSPD", lambda: self.set_describe_menu('MXSPD', plot_menu_groupy)),
+            ("GUST", lambda: self.set_describe_menu('GUST', plot_menu_groupy)),
+            ("MAX", lambda: self.set_describe_menu('MAX', plot_menu_groupy)),
+            ("MIN", lambda: self.set_describe_menu('MIN', plot_menu_groupy)),
+            ("PRCP", lambda: self.set_describe_menu('PRCP', plot_menu_groupy)),
+            ("SNDP", lambda: self.set_describe_menu('SNDP', plot_menu_groupy)),
+            ('Voltar', 'exit')
+        ]
+        plot_menu = MenuConfig(plot_menu_items, self.screen)
+        #
 
         ##
         main_menu_items = [
             ("Trocar intervalo de dados", menu_range.display),
-            ("Desvio Padrão", stddev_menu.display),
             ("Describe", describe_menu.display),
+            ('Plotar gráficos', plot_menu.display),
             ("Sair", "exit")
         ]
-        main_menu = MenuConfig(main_menu_items, self.screen,
-                               'Dados selecionados: Todos')
+        main_menu = MenuConfig(main_menu_items, self.screen)
 
         main_menu.display()
 
@@ -198,6 +257,19 @@ class Menu:
         menu.title = title
         menu.data = data
         menu.display()
+
+    def set_describe_menu(self, column, menu):
+        self.column = column
+        menu.display()
+
+    def get_interval(self):
+        curses.echo()
+        self.screen.addstr(5, 0, "Digite a data: ")
+        self.screen.refresh()
+        date = self.screen.getstr(6,0, 21)
+        set_interval(date.decode())
+        self.screen.refresh()
+        MenuConfig.interval = date.decode()
 
 
 if __name__ == '__main__':
