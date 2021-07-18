@@ -219,8 +219,7 @@ class Menu:
         # Plotar graficos
         plot_menu_groupy = MenuConfig([
             ('Agrupado por ano',  lambda: plot_graph(working_data, self.column, 'year', 'Ano', self.column)),
-            ('Agrupado por mês', lambda: self.settitle_and_display(
-                describe_show, f'{self.column} - Agrupado por mês' + scroll_txt, f'\n\n\n{data_describe(working_data, self.column, "month")}')),
+            ('Agrupado por mês', lambda: plot_graph(working_data, self.column, 'month', 'Mês', self.column)),
             ('Voltar', 'exit')
         ], self.screen)
 
