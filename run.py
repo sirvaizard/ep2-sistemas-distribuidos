@@ -3,9 +3,12 @@ import curses
 from curses import panel
 
 import findspark
+import numpy as np
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import sum, mean, stddev, year, month
+from pyspark.sql.types import FloatType
+from pyspark.sql.functions import sum, mean, stddev, year, month, count, max, min, kurtosis, skewness
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
 os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-8-openjdk-amd64"
 os.environ["SPARK_HOME"] = "spark-3.1.2-bin-hadoop3.2"
@@ -13,10 +16,12 @@ os.environ["SPARK_HOME"] = "spark-3.1.2-bin-hadoop3.2"
 findspark.init('spark-3.1.2-bin-hadoop3.2')
 
 spark = SparkSession.builder.master('local[*]').getOrCreate()
+# spark.conf.set("spark.sql.debug.maxToStringFields", 1000)
 
 # Lê todos os csv dentro da pasta dataset
 dataset = spark.read.csv('dataset/*', header=True)
 working_data = dataset
+
 
 def getShowString(df, truncate=True, vertical=False):
     if isinstance(truncate, bool) and truncate:
@@ -26,7 +31,6 @@ def getShowString(df, truncate=True, vertical=False):
 
 def data_describe(df, column, group):
 
-  from pyspark.sql.functions import mean, stddev, count, max, min, kurtosis, skewness, year, month
 
   if group == "all":
     result = df.agg(count(column), mean(column), min(column), max(column), skewness(column), kurtosis(column), stddev(column))
@@ -88,6 +92,60 @@ def plot_graph(df, column, group, x_label, y_label):
     plt.plot(x, y)
     plt.xlabel(x_label)
     plt.ylabel(y_label)
+    plt.show()
+
+def least_squared(x, y):
+    x_mean = working_data.agg(mean(x)).collect()[0][0]
+    y_mean = working_data.agg(mean(y)).collect()[0][0]
+
+    def reduce_fn(acc, curr):
+        dividend = curr[0] * (curr[1] - y_mean)
+        divisor = curr[0] * (curr[0] - x_mean)
+
+        if x is None:
+            return (dividend, divisor)
+
+        return (acc[0] + dividend, acc[1] + divisor)
+
+
+    x_and_y = working_data.select(working_data[x].cast(FloatType()), working_data[y].cast(FloatType()))
+    # Transforma valores de x e y em floats e aplica a reduce_fn em as todas tuplas de valores
+    b_sum = x_and_y.rdd.reduce(reduce_fn)
+    # A fn reduce returna uma tupla com o divisor e o dividendo da formula dos quadrados minimos
+    b = b_sum[0] / b_sum[1]
+    a = y_mean - (b * x_mean)
+    print(b_sum, x_mean, b, a)
+    return a, b
+
+def plot_prediction_graph(attr, label, value):
+    X = working_data.select(working_data[attr].cast(FloatType()))
+
+    x = X.orderBy(attr).rdd.flatMap(lambda x: x).collect()
+    y = working_data.select(working_data[label].cast(FloatType())).orderBy(label).rdd.flatMap(lambda x: x).collect()
+
+    x_min = float(working_data.agg(min(attr)).collect()[0][0].strip())
+    x_max = float(working_data.agg(max(attr)).collect()[0][0].strip())
+
+    a, b = least_squared(attr, label)
+
+    regression_line = [a + b * v for v in [x_min, x_max]]
+    predicted = a + b * float(value)
+
+    _, ax = plt.subplots(1,1)
+    ax.scatter(x, y, s=1)
+    ax.scatter([value], [predicted], s=30)
+    ax.plot([x_min, x_max], regression_line, '--c')
+    ax.set_xlabel(attr)
+    ax.set_ylabel(label)
+    ax.set_title(f'a: {a} b: {b}\n y0: {regression_line[0]} y1: {regression_line[1]}')
+    ax.annotate(f'valor previsto: {predicted}', (value, predicted))
+    ax.xaxis.set_major_locator(ticker.LinearLocator(15))
+    ax.yaxis.set_major_locator(ticker.LinearLocator(15))
+    plt.show()
+
+def plot_histogram(column):
+    x = working_data.select(working_data[column].cast(FloatType())).orderBy(column).rdd.flatMap(lambda x: x).collect()
+    plt.hist(x, 50)
     plt.show()
 
 class MenuConfig:
@@ -172,6 +230,7 @@ class Menu:
     def __init__(self, stdscreen):
         self.screen = stdscreen
         self.column = ''
+        self.attr = ''
         curses.curs_set(0)
 
         menu_range_items = [
@@ -240,12 +299,71 @@ class Menu:
         ]
         plot_menu = MenuConfig(plot_menu_items, self.screen)
         #
+        # Histogram
+        plot_histogram_items = [
+            ("TEMP", lambda: plot_histogram('TEMP')),
+            ("DEWP", lambda: plot_histogram('DEWP')),
+            ("SLP", lambda: plot_histogram('SLP')),
+            ("STP", lambda: plot_histogram('STP')),
+            ("VISIB", lambda: plot_histogram('VISIB')),
+            ("WDSP", lambda: plot_histogram('WDSP')),
+            ("MXSPD", lambda: plot_histogram('MXSPD')),
+            ("GUST", lambda: plot_histogram('GUST')),
+            ("MAX", lambda: plot_histogram('MAX')),
+            ("MIN", lambda: plot_histogram('MIN')),
+            ("PRCP", lambda: plot_histogram('PRCP')),
+            ("SNDP", lambda: plot_histogram('SNDP')),
+            ('Voltar', 'exit')
+        ]
+        plot_histogram_menu = MenuConfig(plot_histogram_items, self.screen)
+
+        # Predicao valores
+        enter_value_menu = MenuConfig([
+            ('Digitar valor', self.get_predict_value),
+            ('Voltar', 'exit')
+        ], self.screen)
+
+        predict_menu_attr = MenuConfig([
+            ("Em relação a: TEMP", lambda: self.set_predict_menu('TEMP', enter_value_menu)),
+            ("Em relação a: DEWP", lambda: self.set_predict_menu('DEWP', enter_value_menu)),
+            ("Em relação a: SLP", lambda: self.set_predict_menu('SLP', enter_value_menu)),
+            ("Em relação a: STP", lambda: self.set_predict_menu('STP', enter_value_menu)),
+            ("Em relação a: VISIB", lambda: self.set_predict_menu('VISIB', enter_value_menu)),
+            ("Em relação a: WDSP", lambda: self.set_predict_menu('WDSP', enter_value_menu)),
+            ("Em relação a: MXSPD", lambda: self.set_predict_menu('MXSPD', enter_value_menu)),
+            ("Em relação a: GUST", lambda: self.set_predict_menu('GUST', enter_value_menu)),
+            ("Em relação a: MAX", lambda: self.set_predict_menu('MAX', enter_value_menu)),
+            ("Em relação a: MIN", lambda: self.set_predict_menu('MIN', enter_value_menu)),
+            ("Em relação a: PRCP", lambda: self.set_predict_menu('PRCP', enter_value_menu)),
+            ("Em relação a: SNDP", lambda: self.set_predict_menu('SNDP', enter_value_menu)),
+            ('Voltar', 'exit')
+        ], self.screen)
+
+        predict_menu_items = [
+            ("Prever: TEMP", lambda: self.set_describe_menu('TEMP', predict_menu_attr)),
+            ("Prever: DEWP", lambda: self.set_describe_menu('DEWP', predict_menu_attr)),
+            ("Prever: SLP", lambda: self.set_describe_menu('SLP', predict_menu_attr)),
+            ("Prever: STP", lambda: self.set_describe_menu('STP', predict_menu_attr)),
+            ("Prever: VISIB", lambda: self.set_describe_menu('VISIB', predict_menu_attr)),
+            ("Prever: WDSP", lambda: self.set_describe_menu('WDSP', predict_menu_attr)),
+            ("Prever: MXSPD", lambda: self.set_describe_menu('MXSPD', predict_menu_attr)),
+            ("Prever: GUST", lambda: self.set_describe_menu('GUST', predict_menu_attr)),
+            ("Prever: MAX", lambda: self.set_describe_menu('MAX', predict_menu_attr)),
+            ("Prever: MIN", lambda: self.set_describe_menu('MIN', predict_menu_attr)),
+            ("Prever: PRCP", lambda: self.set_describe_menu('PRCP', predict_menu_attr)),
+            ("Prever: SNDP", lambda: self.set_describe_menu('SNDP', predict_menu_attr)),
+            ('Voltar', 'exit')
+        ]
+        predict_menu = MenuConfig(predict_menu_items, self.screen)
+        #
 
         ##
         main_menu_items = [
             ("Trocar intervalo de dados", menu_range.display),
             ("Describe", describe_menu.display),
-            ('Plotar gráficos', plot_menu.display),
+            ('Plotar gráficos de médias', plot_menu.display),
+            ('Plotar histogramas', plot_histogram_menu.display),
+            ('Predição de valores', predict_menu.display),
             ("Sair", "exit")
         ]
         main_menu = MenuConfig(main_menu_items, self.screen)
@@ -261,6 +379,10 @@ class Menu:
         self.column = column
         menu.display()
 
+    def set_predict_menu(self, attr, menu):
+        self.attr = attr
+        menu.display()
+
     def get_interval(self):
         curses.echo()
         self.screen.addstr(5, 0, "Digite a data: ")
@@ -270,6 +392,15 @@ class Menu:
         self.screen.refresh()
         MenuConfig.interval = date.decode()
 
+    def get_predict_value(self):
+        curses.echo()
+        self.screen.addstr(5, 0, "Digite o valor: ")
+        self.screen.refresh()
+        value = self.screen.getstr(6,0, 10)
+        plot_prediction_graph(self.attr, self.column, float(value.decode()))
+
 
 if __name__ == '__main__':
     curses.wrapper(Menu)
+    # least_squared('TEMP', 'DEWP')
+    # plot_prediction_graph('VISIB', 'TEMP', 2)
