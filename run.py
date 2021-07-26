@@ -146,6 +146,7 @@ def plot_prediction_graph(attr, label, value):
 def plot_histogram(column):
     x = working_data.select(working_data[column].cast(FloatType())).orderBy(column).rdd.flatMap(lambda x: x).collect()
     plt.hist(x, 50)
+    plt.title(column)
     plt.show()
 
 class MenuConfig:
